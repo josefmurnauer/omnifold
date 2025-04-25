@@ -118,7 +118,7 @@ Instead of opening a terminal, executing the apptainer image and copy the link t
 ```bash
 cd /scratch/mjosef/
 apptainer exec --nv --bind $(pwd) mppmu_odsl-ml_latest_20250316102343.sif jupyter notebook --no-browser --ip=127.0.0.1 --port=8888
-```bash
+```
 - Copy the link
 - Open your .ipynb file and select in the top right corner kernel: "Existing Jupyter Server"
 - Paste the link
