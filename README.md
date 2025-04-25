@@ -111,3 +111,15 @@ weight_dict = {
 }
 HistRoutine(data_dict,'Name of the feature to plot', reference_name = 'Name of the dataset to calculate the ratio plot', weights = weight_dict)
 ```
+
+# Using Container and VsCode
+
+Instead of opening a terminal, executing the apptainer image and copy the link to a browser, one can directly work in vscode with apptainer:
+```bash
+cd /scratch/mjosef/
+apptainer exec --nv --bind $(pwd) mppmu_odsl-ml_latest_20250316102343.sif jupyter notebook --no-browser --ip=127.0.0.1 --port=8888
+```bash
+- Copy the link
+- Open your .ipynb file and select in the top right corner kernel: "Existing Jupyter Server"
+- Paste the link
+- Select  your Apptainer as a kernel, and it should work! 
