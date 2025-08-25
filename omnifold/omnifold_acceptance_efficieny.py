@@ -9,7 +9,7 @@ import sys, os
 from datetime import datetime
 import gc
 import pickle
-from omnifold.net import weighted_binary_crossentropy
+#from .net import weighted_binary_crossentropy
 
 hvd_installed = False
 try:
@@ -23,7 +23,7 @@ try:
         tf.config.experimental.set_memory_growth(gpu, True)
     if gpus:
         tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
-        
+
 except ImportError:
     # Continue running the code without the optional package
     print("Horovod not found, will continue with single only GPUs.")
@@ -162,19 +162,20 @@ class MultiFold():
         for i in range(self.start,self.niter):
             if self.rank==0:
                 self.log_string("ITERATION: {}".format(i + 1))
-            self.RunStep1(i)        
-            self.RunStep2(i)
+            self.RunStep1A(i)        
+            self.RunStep1B(i)
+            self.RunStep2A(i)
+            self.RunStep2B(i)
             self.CompileModels(fixed=True)
 
-    def RunStep1(self,i):
+    def RunStep1A(self,i):
         '''Data versus reco MC reweighting'''
         if self.rank==0:
-            self.log_string("RUNNING STEP 1")
-        
+            self.log_string("RUNNING STEP 1A")
         self.RunModel(
-            np.concatenate((self.labels_mc,self.labels_data)),
+            np.concatenate((self.labels_mc[self.mc.pass_reco],self.labels_data)),
             
-            np.concatenate((self.weights_push*self.mc.weight*self.mc.pass_reco,
+            np.concatenate(((self.weights_push*self.mc.weight)[self.mc.pass_reco],
                             self.data.weight*self.data.pass_reco)),
             
             i,self.model1,stepn=1,
@@ -185,24 +186,58 @@ class MultiFold():
         #Don't update weights where there's no reco events
         new_weights = np.ones_like(self.weights_pull)
         new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.model1,batch_size=1000)[self.mc.pass_reco]
-        self.weights_pull = self.weights_push *new_weights
+        self.weights_pull = self.weights_push*new_weights
 
-    def RunStep2(self,i):
-        '''Gen to Gen reweighing'''        
+    def RunStep1B(self,i):
+        '''Data versus reco MC reweighting - events that do not pass reco cuts'''
         if self.rank==0:
-            self.log_string("RUNNING STEP 2")
+            self.log_string("RUNNING STEP 1B")
         
         self.RunModel(
+            np.concatenate([np.ones(len(self.mc.gen[self.mc.pass_reco])),np.zeros(len(self.mc.gen[self.mc.pass_reco]))]),
+            np.concatenate((self.weights_pull[self.mc.pass_reco],
+                            np.ones(len(self.mc.gen[self.mc.pass_reco])))),
+            
+            i,self.model1,stepn=3,
+            NTRAIN = self.num_steps_reco*self.BATCH_SIZE,
+            cached = i>self.start #after first training cache the training data
+        )
+
+        #Update weights where there's no reco events
+        avg_vals = self.reweight(self.mc.gen,self.model1,batch_size=1000)[~self.mc.pass_reco]
+        self.weights_pull[~self.mc.pass_reco] = avg_vals
+
+    def RunStep2A(self,i):
+        '''Gen to Gen reweighting'''        
+        if self.rank==0:
+            self.log_string("RUNNING STEP 2A")
+        self.RunModel(
             np.concatenate((self.labels_mc, self.labels_gen)),
-            np.concatenate((self.mc.weight*self.mc.pass_gen, 
-                            self.mc.weight*self.weights_pull*self.mc.pass_gen)),
+            np.concatenate((self.mc.weight, 
+                            (self.mc.weight*self.weights_pull))),
             i,self.model2,stepn=2,
             NTRAIN = self.num_steps_gen*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
         )
         new_weights = np.ones_like(self.weights_push)
-        new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2)[self.mc.pass_gen]
+        new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2,batch_size=1000)[self.mc.pass_gen]
         self.weights_push = new_weights
+
+    def RunStep2B(self,i):
+        '''Gen to Gen reweighting - events that do not pass reco cuts'''        
+        if self.rank==0:
+            self.log_string("RUNNING STEP 2B")
+        print(len(np.ones(len(self.mc.reco[self.mc.pass_gen]))), len(self.weights_push[self.mc.pass_gen]), len(self.mc.reco[self.mc.pass_gen]))
+        self.RunModel(
+            np.concatenate([np.ones(len(self.mc.reco[self.mc.pass_gen])),np.zeros(len(self.mc.reco[self.mc.pass_gen]))]),
+            np.concatenate((self.weights_push[self.mc.pass_gen], 
+                            np.ones(len(self.mc.reco[self.mc.pass_gen])))),
+            i,self.model2,stepn=4,
+            NTRAIN = self.num_steps_gen*self.BATCH_SIZE,
+            cached = i>self.start #after first training cache the training data
+        )
+        avg_vals2 = self.reweight(self.mc.reco,self.model2,batch_size=1000)[~self.mc.pass_gen]
+        self.weights_push[~self.mc.pass_gen] = avg_vals2
 
 
     def RunModel(self,
@@ -215,9 +250,10 @@ class MultiFold():
                  cached = False,
                  ):
 
-        test_frac = 1.-self.train_frac
-        NTEST = int(test_frac*NTRAIN)
-        train_data, test_data = self.cache(labels,weights,stepn,cached,NTRAIN-NTEST)
+        total_size = len(labels)
+        NTRAIN = int(self.train_frac * total_size)
+        NTEST = total_size - NTRAIN
+        train_data, test_data = self.cache(labels, weights, stepn, cached, NTRAIN)
         
         if self.verbose:
             self.log_string(80*'#')
@@ -225,7 +261,7 @@ class MultiFold():
             self.log_string(80*'#')
 
         # used for number of trainig steps
-        num_steps = self.num_steps_reco if stepn==1 else self.num_steps_gen
+        num_steps = self.num_steps_reco if (stepn==1 or stepn==3) else self.num_steps_gen
 
         # Loop over Ensembles. Averaging done in self.reweight()
         for e in range(self.n_ensemble):
@@ -267,9 +303,13 @@ class MultiFold():
                     self.step1_models.append(model_e)
                 if stepn == 2:
                     self.step2_models.append(model_e)
+                if stepn == 3:
+                    self.step1_models.append(model_e)
+                if stepn == 4:
+                    self.step2_models.append(model_e)
 
             else:
-                model_e = self.step1_models[e] if stepn == 1 else self.step2_models[e]
+                model_e = self.step1_models[e] if (stepn==1 or stepn==3) else self.step2_models[e]
                         
             # model_e = model  # TEST of processing iterations w/o ensemble
 
@@ -320,20 +360,34 @@ class MultiFold():
                 self.idx_1 = np.arange(label.shape[0])
                 np.random.shuffle(self.idx_1)
                 self.tf_data1 = tf.data.Dataset.from_tensor_slices(
-                    np.concatenate([self.mc.reco,self.data.reco],0)[self.idx_1])
+                    np.concatenate([self.mc.reco[self.mc.pass_reco],self.data.reco],0)[self.idx_1])
             elif stepn ==2:
                 self.idx_2 = np.arange(label.shape[0])
                 np.random.shuffle(self.idx_2)
                 self.tf_data2 = tf.data.Dataset.from_tensor_slices(
                     np.concatenate([self.mc.gen,self.mc.gen],0)[self.idx_2])
+            elif stepn ==3:
+                self.idx_3 = np.arange(label.shape[0])
+                np.random.shuffle(self.idx_3)
+                self.tf_data3 = tf.data.Dataset.from_tensor_slices(
+                    np.concatenate([self.mc.gen[self.mc.pass_reco],self.mc.gen[self.mc.pass_reco]],0)[self.idx_3])
+            elif stepn ==4:
+                self.idx_4 = np.arange(label.shape[0])
+                np.random.shuffle(self.idx_4)
+                self.tf_data4 = tf.data.Dataset.from_tensor_slices(
+                    np.concatenate([self.mc.reco[self.mc.pass_gen],self.mc.reco[self.mc.pass_gen]],0)[self.idx_4])
                 
-        idx = self.idx_1 if stepn==1 else self.idx_2
+        idx = self.idx_1 if stepn==1 else (self.idx_2 if stepn==2 else (self.idx_3 if stepn==3 else self.idx_4))
         labels = tf.data.Dataset.from_tensor_slices(np.stack((label[idx],weights[idx]),axis=1))
         
         if stepn ==1:
             data = tf.data.Dataset.zip((self.tf_data1,labels))
         elif stepn==2:
             data = tf.data.Dataset.zip((self.tf_data2,labels))
+        elif stepn==3:
+            data = tf.data.Dataset.zip((self.tf_data3,labels))
+        elif stepn==4:
+            data = tf.data.Dataset.zip((self.tf_data4,labels))
         else:
             logging.error("ERROR: STEPN not recognized")
 
@@ -431,3 +485,6 @@ class MultiFold():
         self.log_file.write(out_str+'\n')
         self.log_file.flush()
         print(out_str)
+
+
+

@@ -92,5 +92,8 @@ class DataLoader():
 
         if normalize:
             if self.rank==0:print(f"INFO: Normalizing sum of weights to {normalization_factor} ...")
-            sumw = np.sum(self.weight[np.array(self.pass_reco)==1])
+            #sumw = np.sum(self.weight[np.array(self.pass_reco)==1])
+            sumw = np.sum(self.weight)
             self.weight *= (normalization_factor/sumw).astype(np.float32)
+
+

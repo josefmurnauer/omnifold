@@ -68,7 +68,7 @@ def HistRoutine(feed_dict,
                               "#b9ac70", "#717581", "#92dadd"],
                 ref_plot = {'histtype':'stepfilled','alpha':0.2},
                 other_plots = {'histtype':'step','linewidth':2},
-                marker_style = 'o',
+                marker_style = 'x',
                 uncertainty=None):
     if plot_ratio:
         assert reference_name in feed_dict.keys(), "ERROR: Don't know the reference distribution"
@@ -109,13 +109,13 @@ def HistRoutine(feed_dict,
             if reference_name!=plot:
                 ratio = np.ma.divide(dist,reference_hist).filled(0)
                 ax1.plot(xaxis,ratio,ms=10,marker = marker_style,color=color[plot],
-                         lw=0,markerfacecolor='none',markeredgewidth=3)
+                         lw=0,markerfacecolor='none',markeredgewidth=1.5)
                 if uncertainty is not None:
                     for ibin in range(len(binning)-1):
                         xup = binning[ibin+1]
                         xlow = binning[ibin]
                         ax1.fill_between(np.array([xlow,xup]),
-                                         uncertainty[ibin],-uncertainty[ibin], alpha=0.3,color='k')    
+                                         1+uncertainty[ibin],1-uncertainty[ibin], alpha=0.3,color='k')    
     if logy:
         ax0.set_yscale('log')
         ax0.set_ylim(1e-5,10*maxy)
@@ -137,3 +137,5 @@ def HistRoutine(feed_dict,
         FormatFig(xlabel = xlabel, ylabel = ylabel,ax0=ax0) 
         
     return fig,ax0
+
+
