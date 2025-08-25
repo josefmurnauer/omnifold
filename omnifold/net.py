@@ -3,6 +3,7 @@ import tensorflow.keras.layers as layers
 from tensorflow.keras.models import Model
 import tensorflow as tf
 from tensorflow import keras
+from keras.layers import Layer
 
 
 def weighted_binary_crossentropy(y_true, y_pred):
@@ -172,7 +173,7 @@ class PET(Model):
             conditional = tf.tile(conditional[:,None, :], [1,tf.shape(encoded)[1], 1])
             scale,shift = tf.split(conditional,2,-1)
             encoded = encoded*(1.0 + scale) + shift
-
+            
         class_tokens = tf.Variable(tf.zeros(shape=(1, projection_dim)),trainable = True)    
         class_tokens = tf.tile(class_tokens[None, :, :], [tf.shape(encoded)[0], 1, 1])
         
@@ -217,7 +218,7 @@ class PET(Model):
         loss = weighted_binary_crossentropy(y, y_pred)
         self.loss_tracker.update_state(loss)
         return {"loss": self.loss_tracker.result()}
-        
+
 
 def get_neighbors(points,features,projection_dim,K):
     drij = pairwise_distance(points)  # (N, P, P)
