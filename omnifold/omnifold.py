@@ -172,16 +172,16 @@ class MultiFold():
             self.log_string("RUNNING STEP 1")
         
         self.RunModel(
-            np.concatenate((self.labels_mc,self.labels_data)),
+            np.concatenate((self.labels_mc[self.mc.pass_reco],self.labels_data[self.data.pass_reco])),
             
-            np.concatenate((self.weights_push*self.mc.weight*self.mc.pass_reco,
-                            self.data.weight*self.data.pass_reco)),
+            np.concatenate(((self.weights_push*self.mc.weight)[self.mc.pass_reco],
+                            self.data.weight[self.data.pass_reco])),
             
             i,self.model1,stepn=1,
             NTRAIN = self.num_steps_reco*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
         )
-
+        
         #Don't update weights where there's no reco events
         new_weights = np.ones_like(self.weights_pull)
         new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.model1,batch_size=1000)[self.mc.pass_reco]
@@ -193,16 +193,16 @@ class MultiFold():
             self.log_string("RUNNING STEP 2")
         
         self.RunModel(
-            np.concatenate((self.labels_mc, self.labels_gen)),
-            np.concatenate((self.mc.weight*self.mc.pass_gen, 
-                            self.mc.weight*self.weights_pull*self.mc.pass_gen)),
+            np.concatenate((self.labels_mc[self.mc.pass_gen], self.labels_gen[self.mc.pass_gen])),
+            np.concatenate((self.mc.weight[self.mc.pass_gen], 
+                            (self.mc.weight*self.weights_pull)[self.mc.pass_gen])),
             i,self.model2,stepn=2,
             NTRAIN = self.num_steps_gen*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
         )
-        new_weights = np.ones_like(self.weights_push)
-        new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2)[self.mc.pass_gen]
-        self.weights_push = new_weights
+        new_weights2 = np.ones_like(self.weights_push)
+        new_weights2[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2, batch_size=1000)[self.mc.pass_gen]
+        self.weights_push = new_weights2
 
 
     def RunModel(self,
@@ -214,10 +214,18 @@ class MultiFold():
                  NTRAIN=1000,
                  cached = False,
                  ):
+        features = None
+        if stepn == 1:
+            features = np.concatenate([self.mc.reco[self.mc.pass_reco],
+                                    self.data.reco[self.data.pass_reco]], axis=0)
+        elif stepn == 2:
+            features = np.concatenate([self.mc.gen[self.mc.pass_gen], self.mc.gen[self.mc.pass_gen]], axis=0)
 
-        test_frac = 1.-self.train_frac
-        NTEST = int(test_frac*NTRAIN)
-        train_data, test_data = self.cache(labels,weights,stepn,cached,NTRAIN-NTEST)
+        total_size = features.shape[0]
+        #total_size = len(labels)
+        NTRAIN = int(self.train_frac * total_size)
+        NTEST = total_size - NTRAIN
+        train_data, test_data = self.cache(labels, weights, stepn, cached, NTRAIN)
         
         if self.verbose:
             self.log_string(80*'#')
@@ -317,15 +325,15 @@ class MultiFold():
                 self.log_string("Creating cached data from step {}".format(stepn))
                     
             if stepn ==1:
-                self.idx_1 = np.arange(label.shape[0])
+                features = np.concatenate([self.mc.reco[self.mc.pass_reco],self.data.reco[self.data.pass_reco]],0)
+                self.idx_1 = np.arange(features.shape[0])
                 np.random.shuffle(self.idx_1)
-                self.tf_data1 = tf.data.Dataset.from_tensor_slices(
-                    np.concatenate([self.mc.reco,self.data.reco],0)[self.idx_1])
+                self.tf_data1 = tf.data.Dataset.from_tensor_slices(features[self.idx_1])
             elif stepn ==2:
-                self.idx_2 = np.arange(label.shape[0])
+                features = np.concatenate([self.mc.gen[self.mc.pass_gen], self.mc.gen[self.mc.pass_gen]],0)
+                self.idx_2 = np.arange(features.shape[0])
                 np.random.shuffle(self.idx_2)
-                self.tf_data2 = tf.data.Dataset.from_tensor_slices(
-                    np.concatenate([self.mc.gen,self.mc.gen],0)[self.idx_2])
+                self.tf_data2 = tf.data.Dataset.from_tensor_slices(features[self.idx_2])
                 
         idx = self.idx_1 if stepn==1 else self.idx_2
         labels = tf.data.Dataset.from_tensor_slices(np.stack((label[idx],weights[idx]),axis=1))
