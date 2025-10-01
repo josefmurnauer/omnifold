@@ -150,6 +150,8 @@ class MultiFold():
         
         self.step1_models = []  # list for model1 ensembles
         self.step2_models = []  # list for model2 ensembles
+        self.step3_models = []  # list for model1 ensembles
+        self.step4_models = []  # list for model2 ensembles
 
         self.weights_pull = np.ones(self.mc.weight.shape[0],dtype=np.float32)
         if self.start>0:
@@ -173,10 +175,10 @@ class MultiFold():
         if self.rank==0:
             self.log_string("RUNNING STEP 1A")
         self.RunModel(
-            np.concatenate((self.labels_mc[self.mc.pass_reco],self.labels_data)),
+            np.concatenate((self.labels_mc[self.mc.pass_reco],self.labels_data[self.data.pass_reco])),
             
             np.concatenate(((self.weights_push*self.mc.weight)[self.mc.pass_reco],
-                            self.data.weight*self.data.pass_reco)),
+                            self.data.weight[self.data.pass_reco])),
             
             i,self.model1,stepn=1,
             NTRAIN = self.num_steps_reco*self.BATCH_SIZE,
@@ -206,30 +208,31 @@ class MultiFold():
         #Update weights where there's no reco events
         avg_vals = self.reweight(self.mc.gen,self.model1,batch_size=1000)[~self.mc.pass_reco]
         self.weights_pull[~self.mc.pass_reco] = avg_vals
+        self.debug_weights(self.weights_pull, "weights_pull", "after 1B")
 
     def RunStep2A(self,i):
         '''Gen to Gen reweighting'''        
         if self.rank==0:
             self.log_string("RUNNING STEP 2A")
         self.RunModel(
-            np.concatenate((self.labels_mc, self.labels_gen)),
-            np.concatenate((self.mc.weight, 
-                            (self.mc.weight*self.weights_pull))),
+            np.concatenate((self.labels_mc[self.mc.pass_gen], self.labels_gen[self.mc.pass_gen])),
+            np.concatenate((self.mc.weight[self.mc.pass_gen], 
+                            (self.mc.weight*self.weights_pull)[self.mc.pass_gen])),
             i,self.model2,stepn=2,
             NTRAIN = self.num_steps_gen*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
         )
-        new_weights = np.ones_like(self.weights_push)
-        new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2,batch_size=1000)[self.mc.pass_gen]
-        self.weights_push = new_weights
+        new_weights2 = np.ones_like(self.weights_push)
+        new_weights2[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2,batch_size=1000)[self.mc.pass_gen]
+        self.weights_push = new_weights2
+
 
     def RunStep2B(self,i):
         '''Gen to Gen reweighting - events that do not pass reco cuts'''        
         if self.rank==0:
             self.log_string("RUNNING STEP 2B")
-        print(len(np.ones(len(self.mc.reco[self.mc.pass_gen]))), len(self.weights_push[self.mc.pass_gen]), len(self.mc.reco[self.mc.pass_gen]))
         self.RunModel(
-            np.concatenate([np.ones(len(self.mc.reco[self.mc.pass_gen])),np.zeros(len(self.mc.reco[self.mc.pass_gen]))]),
+            np.concatenate((np.ones((len(self.mc.reco[self.mc.pass_gen])),np.zeros(len(self.mc.reco[self.mc.pass_gen]))))),
             np.concatenate((self.weights_push[self.mc.pass_gen], 
                             np.ones(len(self.mc.reco[self.mc.pass_gen])))),
             i,self.model2,stepn=4,
@@ -249,8 +252,18 @@ class MultiFold():
                  NTRAIN=1000,
                  cached = False,
                  ):
+        features = None
+        if stepn == 1:
+            features = np.concatenate([self.mc.reco[self.mc.pass_reco], self.data.reco[self.data.pass_reco]], axis=0)
+        elif stepn == 2:
+            features = np.concatenate([self.mc.gen[self.mc.pass_gen], self.mc.gen[self.mc.pass_gen]], axis=0)
+        elif stepn == 3:
+            features = np.concatenate([self.mc.gen[self.mc.pass_reco], self.mc.gen[self.mc.pass_reco]], axis=0)
+        elif stepn == 4:
+            features = np.concatenate([self.mc.reco[self.mc.pass_gen], self.mc.reco[self.mc.pass_gen]], axis=0)
 
-        total_size = len(labels)
+        total_size = features.shape[0]
+        #total_size = len(labels)
         NTRAIN = int(self.train_frac * total_size)
         NTEST = total_size - NTRAIN
         train_data, test_data = self.cache(labels, weights, stepn, cached, NTRAIN)
@@ -301,15 +314,22 @@ class MultiFold():
 
                 if stepn == 1:
                     self.step1_models.append(model_e)
-                if stepn == 2:
+                elif stepn == 2:
                     self.step2_models.append(model_e)
-                if stepn == 3:
-                    self.step1_models.append(model_e)
-                if stepn == 4:
-                    self.step2_models.append(model_e)
+                elif stepn == 3:
+                    self.step3_models.append(model_e)
+                elif stepn == 4:
+                    self.step4_models.append(model_e)
 
             else:
-                model_e = self.step1_models[e] if (stepn==1 or stepn==3) else self.step2_models[e]
+                if stepn == 1:
+                    model_e = self.step1_models[e]
+                elif stepn == 2:
+                    model_e = self.step2_models[e]
+                elif stepn == 3:
+                    model_e = self.step3_models[e]
+                elif stepn == 4:
+                    model_e = self.step4_models[e]
                         
             # model_e = model  # TEST of processing iterations w/o ensemble
 
@@ -357,25 +377,25 @@ class MultiFold():
                 self.log_string("Creating cached data from step {}".format(stepn))
                     
             if stepn ==1:
-                self.idx_1 = np.arange(label.shape[0])
+                features = np.concatenate([self.mc.reco[self.mc.pass_reco],self.data.reco[self.data.pass_reco]],0)
+                self.idx_1 = np.arange(features.shape[0])
                 np.random.shuffle(self.idx_1)
-                self.tf_data1 = tf.data.Dataset.from_tensor_slices(
-                    np.concatenate([self.mc.reco[self.mc.pass_reco],self.data.reco],0)[self.idx_1])
+                self.tf_data1 = tf.data.Dataset.from_tensor_slices(features[self.idx_1])
             elif stepn ==2:
-                self.idx_2 = np.arange(label.shape[0])
+                features = np.concatenate([self.mc.gen[self.mc.pass_gen], self.mc.gen[self.mc.pass_gen]],0)
+                self.idx_2 = np.arange(features.shape[0])
                 np.random.shuffle(self.idx_2)
-                self.tf_data2 = tf.data.Dataset.from_tensor_slices(
-                    np.concatenate([self.mc.gen,self.mc.gen],0)[self.idx_2])
+                self.tf_data2 = tf.data.Dataset.from_tensor_slices(features[self.idx_2])
             elif stepn ==3:
-                self.idx_3 = np.arange(label.shape[0])
+                features = np.concatenate([self.mc.gen[self.mc.pass_reco],self.mc.gen[self.mc.pass_reco]],0)
+                self.idx_3 = np.arange(features.shape[0])
                 np.random.shuffle(self.idx_3)
-                self.tf_data3 = tf.data.Dataset.from_tensor_slices(
-                    np.concatenate([self.mc.gen[self.mc.pass_reco],self.mc.gen[self.mc.pass_reco]],0)[self.idx_3])
+                self.tf_data3 = tf.data.Dataset.from_tensor_slices(features[self.idx_3])
             elif stepn ==4:
-                self.idx_4 = np.arange(label.shape[0])
+                features = np.concatenate([self.mc.reco[self.mc.pass_gen], self.mc.reco[self.mc.pass_gen]],0)
+                self.idx_4 = np.arange(features.shape[0])
                 np.random.shuffle(self.idx_4)
-                self.tf_data4 = tf.data.Dataset.from_tensor_slices(
-                    np.concatenate([self.mc.reco[self.mc.pass_gen],self.mc.reco[self.mc.pass_gen]],0)[self.idx_4])
+                self.tf_data4 = tf.data.Dataset.from_tensor_slices(features[self.idx_4])
                 
         idx = self.idx_1 if stepn==1 else (self.idx_2 if stepn==2 else (self.idx_3 if stepn==3 else self.idx_4))
         labels = tf.data.Dataset.from_tensor_slices(np.stack((label[idx],weights[idx]),axis=1))
@@ -421,6 +441,10 @@ class MultiFold():
                 self.CompileModel(model,self.train_frac*self.num_steps_reco,fixed)
             for model in self.step2_models:
                 self.CompileModel(model,self.train_frac*self.num_steps_gen, fixed)
+            for model in self.step3_models:
+                self.CompileModel(model,self.train_frac*self.num_steps_reco,fixed)
+            for model in self.step4_models:
+                self.CompileModel(model,self.train_frac*self.num_steps_gen, fixed)
 
 
     def LoadStart(self):
@@ -436,24 +460,42 @@ class MultiFold():
                     self.weights_folder,self.name,self.start-1, e)
                 model2_name = '{}/OmniFold_{}_iter{}_step2_ensemble{}.weights.h5'.format(
                     self.weights_folder,self.name,self.start-1, e)
+                model3_name = '{}/OmniFold_{}_iter{}_step3_ensemble{}.weights.h5'.format(
+                    self.weights_folder,self.name,self.start-1, e)
+                model4_name = '{}/OmniFold_{}_iter{}_step4_ensemble{}.weights.h5'.format(
+                    self.weights_folder,self.name,self.start-1, e)
 
                 temp1 = tf.keras.models.clone_model(self.model1)
                 temp2 = tf.keras.models.clone_model(self.model2)
+                temp3 = tf.keras.models.clone_model(self.model1)
+                temp4 = tf.keras.models.clone_model(self.model2)
                 temp1.load_weights(model1_name)  #better starting point for model 1
                 temp2.load_weights(model2_name)
+                temp3.load_weights(model3_name)  #better starting point for model 1
+                temp4.load_weights(model4_name)
                 self.step1_models.append(temp1) #FIXME: need to put this in ensemble loop
                 self.step2_models.append(temp2)
+                self.step3_models.append(temp3) #FIXME: need to put this in ensemble loop
+                self.step4_models.append(temp4)
 
         else:  # no ensembling
             model1_name = '{}/OmniFold_{}_iter{}_step1.weights.h5'.format(self.weights_folder,self.name,self.start-1)
             model2_name = '{}/OmniFold_{}_iter{}_step2.weights.h5'.format(self.weights_folder,self.name,self.start-1)
+            model3_name = '{}/OmniFold_{}_iter{}_step3.weights.h5'.format(self.weights_folder,self.name,self.start-1)
+            model4_name = '{}/OmniFold_{}_iter{}_step4.weights.h5'.format(self.weights_folder,self.name,self.start-1)
 
             temp1 = tf.keras.models.clone_model(self.model1)
             temp2 = tf.keras.models.clone_model(self.model2)
+            temp3 = tf.keras.models.clone_model(self.model3)
+            temp4 = tf.keras.models.clone_model(self.model4)
             temp1.load_weights(model1_name)  #better starting point for model 1
             temp2.load_weights(model2_name)
+            temp3.load_weights(model3_name)  #better starting point for model 1
+            temp4.load_weights(model4_name)
             self.step1_models.append(temp1) #FIXME: need to put this in ensemble loop
             self.step2_models.append(temp2)
+            self.step3_models.append(temp3) #FIXME: need to put this in ensemble loop
+            self.step4_models.append(temp4)
 
         self.weights_push = self.reweight(self.mc.gen,self.model2,batch_size=1000)
 
@@ -470,7 +512,10 @@ class MultiFold():
 
         if self.n_ensemble > 1 and len(self.step1_models) > 0:  # need to take avg of ensembles
             self.log_string("Averaging over ensembles...")
-        models = self.step1_models if model == self.model1 else self.step2_models
+        if model == self.model1:
+            models = self.step1_models + self.step3_models
+        elif model == self.model2:
+            models = self.step2_models + self.step4_models
 
         avg_weights = np.zeros((len(events)))
         for model in models:
