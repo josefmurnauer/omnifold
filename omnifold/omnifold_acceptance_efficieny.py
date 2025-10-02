@@ -194,9 +194,8 @@ class MultiFold():
         '''Data versus reco MC reweighting - events that do not pass reco cuts'''
         if self.rank==0:
             self.log_string("RUNNING STEP 1B")
-        
         self.RunModel(
-            np.concatenate([np.ones(len(self.mc.gen[self.mc.pass_reco])),np.zeros(len(self.mc.gen[self.mc.pass_reco]))]),
+            np.concatenate((self.labels_gen1[self.mc.pass_reco], self.labels_gen[self.mc.pass_reco])),
             np.concatenate((self.weights_pull[self.mc.pass_reco],
                             np.ones(len(self.mc.gen[self.mc.pass_reco])))),
             
@@ -208,16 +207,15 @@ class MultiFold():
         #Update weights where there's no reco events
         avg_vals = self.reweight(self.mc.gen,self.model1,batch_size=1000)[~self.mc.pass_reco]
         self.weights_pull[~self.mc.pass_reco] = avg_vals
-        self.debug_weights(self.weights_pull, "weights_pull", "after 1B")
 
     def RunStep2A(self,i):
         '''Gen to Gen reweighting'''        
         if self.rank==0:
             self.log_string("RUNNING STEP 2A")
         self.RunModel(
-            np.concatenate((self.labels_mc[self.mc.pass_gen], self.labels_gen[self.mc.pass_gen])),
-            np.concatenate((self.mc.weight[self.mc.pass_gen], 
-                            (self.mc.weight*self.weights_pull)[self.mc.pass_gen])),
+            np.concatenate((self.labels_gen, self.labels_gen1)),
+            np.concatenate((self.mc.weight, 
+                            (self.mc.weight*self.weights_pull))),
             i,self.model2,stepn=2,
             NTRAIN = self.num_steps_gen*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
@@ -232,9 +230,9 @@ class MultiFold():
         if self.rank==0:
             self.log_string("RUNNING STEP 2B")
         self.RunModel(
-            np.concatenate((np.ones((len(self.mc.reco[self.mc.pass_gen])),np.zeros(len(self.mc.reco[self.mc.pass_gen]))))),
+            np.concatenate((self.labels_mc1[self.mc.pass_gen],self.labels_mc[self.mc.pass_gen])),
             np.concatenate((self.weights_push[self.mc.pass_gen], 
-                            np.ones(len(self.mc.reco[self.mc.pass_gen])))),
+                            np.ones(len(self.mc.pass_reco[self.mc.pass_gen])))),
             i,self.model2,stepn=4,
             NTRAIN = self.num_steps_gen*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
@@ -256,7 +254,7 @@ class MultiFold():
         if stepn == 1:
             features = np.concatenate([self.mc.reco[self.mc.pass_reco], self.data.reco[self.data.pass_reco]], axis=0)
         elif stepn == 2:
-            features = np.concatenate([self.mc.gen[self.mc.pass_gen], self.mc.gen[self.mc.pass_gen]], axis=0)
+            features = np.concatenate([self.mc.gen, self.mc.gen], axis=0)
         elif stepn == 3:
             features = np.concatenate([self.mc.gen[self.mc.pass_reco], self.mc.gen[self.mc.pass_reco]], axis=0)
         elif stepn == 4:
@@ -382,7 +380,7 @@ class MultiFold():
                 np.random.shuffle(self.idx_1)
                 self.tf_data1 = tf.data.Dataset.from_tensor_slices(features[self.idx_1])
             elif stepn ==2:
-                features = np.concatenate([self.mc.gen[self.mc.pass_gen], self.mc.gen[self.mc.pass_gen]],0)
+                features = np.concatenate([self.mc.gen, self.mc.gen],0)
                 self.idx_2 = np.arange(features.shape[0])
                 np.random.shuffle(self.idx_2)
                 self.tf_data2 = tf.data.Dataset.from_tensor_slices(features[self.idx_2])
@@ -502,8 +500,10 @@ class MultiFold():
 
     def PrepareInputs(self):
         self.labels_mc = np.zeros(len(self.mc.pass_reco),dtype=np.float32)
+        self.labels_mc1 = np.ones(len(self.mc.pass_reco),dtype=np.float32)
         self.labels_data = np.ones(len(self.data.pass_reco),dtype=np.float32)
-        self.labels_gen = np.ones(len(self.mc.pass_gen),dtype=np.float32)
+        self.labels_gen1 = np.ones(len(self.mc.pass_gen),dtype=np.float32)
+        self.labels_gen = np.zeros(len(self.mc.pass_reco),dtype=np.float32)
 
 
     def reweight(self,events,model,batch_size=None):
