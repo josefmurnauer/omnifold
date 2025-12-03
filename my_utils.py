@@ -53,6 +53,34 @@ def MC_data_shaper(df):
     
     return reco_features, truth_features
 
+def DATA_shaper(df):
+
+    particle_names = ['l1', 'b1', 'b2', 'b3', 'b4', 'j1', 'j2', 'j3', 'j4', 'j5', 'j6']
+
+    # Build reco and truth arrays
+    reco_pts  = [df[f'pt{p}']   for p in particle_names]
+    reco_etas = [df[f'eta{p}']  for p in particle_names]
+    reco_phis = [df[f'phi{p}']  for p in particle_names]
+    
+    # Masses: lepton = 0, b-jets = mb1–4, jets = mj1–6
+    reco_masses = [np.zeros_like(df['ptl1'])] + \
+                  [df[f'mb{i}'] for i in range(1, 5)] + \
+                  [df[f'mj{i}'] for i in range(1, 7)]
+    # Stack into (12 particles, n_events, 4)
+    reco_features = np.stack([reco_pts, reco_etas, reco_phis, reco_masses], axis=-1)
+    reco_features = reco_features.transpose(1, 0, 2)  # → (n_events, 12, 4)
+
+    # Neutrino (reco): met, eta=0, phi=metphi, mass=0
+    met_pt = df['met']
+    met_phi = df['metphi']
+    zeros = np.zeros_like(met_pt)
+    neutrino_reco = np.stack([met_pt, zeros, met_phi, zeros], axis=-1)  # (n_events, 4)
+
+    # Append neutrino
+    reco_features = np.concatenate([reco_features, neutrino_reco[:, None, :]], axis=1)  # (n_events, 12, 4)
+    
+    return reco_features
+
 def subset(df, n_evts, train_test=False):
     
     random_subset = df.sample(n_evts, random_state=42)
@@ -271,10 +299,28 @@ def max_dr_bl(array):
     dr_stack = np.stack(dr_values, axis=1)  # shape (n_events, 2)
     return np.max(dr_stack, axis=1)
 
+def four_vector_transformation(array1, array2):
+    vec1 = convert_to4vector(array1)
+    vec2 = convert_to4vector(array2)
+    combined_vec = vec1 + vec2
+    px = combined_vec[:, 1]
+    py = combined_vec[:, 2]
+    pz = combined_vec[:, 3]
+
+    pt = np.hypot(px, py)
+    # avoid division by zero for eta calculation
+    z_over_t = np.divide(pz, pt, out=np.zeros_like(pz), where=pt != 0)
+    eta = np.arcsinh(z_over_t)   # pseudorapidity = asinh(pz/pt)
+
+    phi = np.arctan2(py, px)
+    m = calculate_mass(combined_vec)
+
+    return np.stack([pt, eta, phi, m], axis=-1)
+
 def pairwise(array):
-    new_entry1 = np.stack([min_mbl(array), min_dr_bl(array), max_dr_bl(array), max_mbl(array)],axis=-1)
+    new_entry1 = four_vector_transformation(array[:,0,:], array[:,1,:])
     new_entry1_extended = new_entry1[:,np.newaxis,:]
-    new_entry2 = np.stack([mbb(array), dR2b(array), dR2j(array), mjj(array)],axis=-1)
+    new_entry2 = four_vector_transformation(array[:,0,:], array[:,2,:])
     new_entry2_extended = new_entry2[:,np.newaxis,:]
     return np.concatenate([new_entry1_extended, new_entry2_extended], axis=1)
 
@@ -325,7 +371,7 @@ class JetScaler:
     
 particles = ['l1', 'b1', 'b2', 'b3', 'b4', 
              'j1', 'j2', 'j3', 'j4', 'j5', 'j6', 'met'
-             #,'min_mbl', 'mbb', 'max_mbl', 'mjj'
+             ,'mbl1', 'mbl2'
              ]
 
 pt_binning = {
@@ -341,10 +387,10 @@ pt_binning = {
     'j5': np.linspace(0, 200, 16),
     'j6': np.linspace(0, 150, 12),
     'met': np.linspace(0, 300, 31),
-    #'min_mbl': np.linspace(0, 600, 21),
-    #'mbb': np.linspace(0,900, 21),
-    #'max_mbl': np.linspace(0, 600, 21),
-    #'mjj': np.linspace(0,900, 21),
+    'ptbl1': np.linspace(0, 600, 21),
+    'ptbl2': np.linspace(0, 600, 21),
+    'mbl1': np.linspace(0, 600, 21),
+    'mbl2': np.linspace(0, 600, 21),
 }
     
 def plot_pt_subplot(ax_main, ax_ratio, data_dict, weights_dict, bins):
@@ -397,7 +443,7 @@ def build_transformer_model(input_shape=(12, 4),
                             num_heads=4,
                             ff_dim=64,
                             num_transformer_blocks=2,
-                            dropout_rate=0.1):
+                            dropout_rate=0.2):
 
     inputs = Input(shape=input_shape)
 
@@ -477,3 +523,129 @@ def make_mc_subsample(loader, reco_cuts_mask, N_data):
             break
 
     return flags
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_omnifold_vs_tunfold(
+    unfolded_weights,
+    TUnfold_incl_file,
+    pythia_test,
+    pythia_truth_test,
+    observables=None,
+    luminosity=None,
+    fig_size=(14, 10),
+    yscale='log'
+):
+    """
+    Plot 4 observables in a 2x2 grid comparing OmniFold and TUnfold.
+    
+    Parameters
+    ----------
+    unfolded_weights : array
+        Weights from OmniFold (n_events,).
+    TUnfold_incl_file : dict-like
+        Contains histograms and uncertainties from TUnfold.
+    pythia_test : DataFrame or structured array
+        Pythia test MC including 'eventWeight' and 'pass_particle'.
+    pythia_truth_test : np.ndarray
+        MC truth array, shape (n_events, n_observables, 1).
+    observables : dict, optional
+        Dictionary of observables to plot {name: index}.
+    luminosity : float, optional
+        Total luminosity for scaling.
+    fig_size : tuple, optional
+        Figure size.
+    yscale : str, optional
+        Y-axis scale for main panel ('linear' or 'log').
+    """
+    
+    if observables is None:
+        observables = {"ptl1":0, "ptb1":1, "ptb2":2, "met":11}
+    
+    if luminosity is None:
+        raise ValueError("Please provide a total luminosity for scaling.")
+    
+    SF = 1 / luminosity
+    
+    # Set up 2x2 figure
+    fig = plt.figure(figsize=fig_size)
+    outer_gs = fig.add_gridspec(2, 2, wspace=0.3, hspace=0.3)
+    
+    for idx, (obs_name, obs_index) in enumerate(observables.items()):
+        row, col = divmod(idx, 2)
+        inner_gs = outer_gs[row, col].subgridspec(2, 1, height_ratios=[3, 1], hspace=0.05)
+        ax_main = fig.add_subplot(inner_gs[0])
+        ax_ratio = fig.add_subplot(inner_gs[1], sharex=ax_main)
+        
+        # --- Load TUnfold histograms ---
+        hist = TUnfold_incl_file[f'unfolding_{obs_name}_NOSYS']
+        rel_up = TUnfold_incl_file[f'unfolding_error_{obs_name}_direct_STAT_DATA__1up;1']
+        rel_down = TUnfold_incl_file[f'unfolding_error_{obs_name}_direct_STAT_DATA__1down;1']
+        values = hist.values()
+        edges = hist.axis().edges()
+        bin_widths = np.diff(edges)
+        bin_centers = 0.5 * (edges[:-1] + edges[1:])
+        
+        rel_unc_up = rel_up.values()
+        rel_unc_down = rel_down.values()
+        
+        # --- OmniFold histogram ---
+        weights_omnifold = (unfolded_weights * pythia_test['eventWeight'] * pythia_test["pass_particle"].to_numpy()) * SF
+        weights_omnifold2 = weights_omnifold**2
+        values_omnifold = pythia_truth_test[:, obs_index, 0]
+        counts2, _ = np.histogram(values_omnifold, bins=edges, weights=weights_omnifold)
+        counts2_density = counts2 / bin_widths
+        sum_w2, _ = np.histogram(values_omnifold, bins=edges, weights=weights_omnifold2)
+        rel_unc_omnifold = np.sqrt(sum_w2) / counts2
+        rel_unc_omnifold[~np.isfinite(rel_unc_omnifold)] = 0
+        
+        # --- Pythia reference ---
+        counts1, _ = np.histogram(
+            pythia_truth_test[:, obs_index, 0],
+            bins=edges,
+            weights=pythia_test['eventWeight'] * pythia_test["pass_particle"].to_numpy() * SF
+        )
+        counts1_density = counts1 / bin_widths
+        values_density = values / bin_widths
+        
+        # --- Main panel ---
+        ax_main.step(edges[:-1], counts1_density, where='post', label='MC particle level')
+        ax_main.step(edges[:-1], counts2_density, where='post', label='OmniFold')
+        yerr = np.vstack((rel_unc_down * values_density, rel_unc_up * values_density))
+        ax_main.errorbar(bin_centers[:-1], values_density[:-1], yerr=yerr[:, :-1], fmt='o',
+                         color='black', capsize=3, markersize=4, label='TUnfold')
+        ax_main.set_ylabel("Cross-section [pb/GeV]")
+        ax_main.set_yscale(yscale)
+        ax_main.grid(True, linestyle='--', alpha=0.5)
+        ax_main.set_title(obs_name)
+        ax_main.legend(fontsize=8)
+        
+        # --- Ratio panel ---
+        ratio_tunfold = np.ones_like(values_density)
+        ratio_omnifold = np.divide(counts2_density, values_density, out=np.zeros_like(counts2_density), where=values_density != 0)
+        ratio_mc = np.divide(counts1_density, values_density, out=np.zeros_like(counts1_density), where=values_density != 0)
+        
+        ratio_omnifold_step = np.append(ratio_omnifold, ratio_omnifold[-1])
+        ratio_mc_step = np.append(ratio_mc, ratio_mc[-1])
+        
+        upper_omnifold = ratio_omnifold * (1 + rel_unc_omnifold)
+        lower_omnifold = ratio_omnifold * (1 - rel_unc_omnifold)
+        upper_tunfold = ratio_tunfold * (1 + rel_unc_up)
+        lower_tunfold = ratio_tunfold * (1 - rel_unc_down)
+        yerr_tunfold = np.vstack((ratio_tunfold * rel_unc_down, ratio_tunfold * rel_unc_up))
+        
+        ax_ratio.step(edges[:-1], ratio_mc_step[:-1], where='post', color='blue', label='MC / TUnfold')
+        ax_ratio.step(edges[:-1], ratio_omnifold_step[:-1], where='post', color='orange', label='OmniFold / TUnfold')
+        ax_ratio.errorbar(bin_centers[:-1], ratio_tunfold[:-1], yerr=yerr_tunfold[:, :-1],
+                          fmt='o', color='black', capsize=3, label='TUnfold stat. unc.')
+        ax_ratio.fill_between(edges[:-1], lower_omnifold, upper_omnifold, step='post',
+                              alpha=0.2, color='orange', label='stat. unc. OmniFold')
+        ax_ratio.set_xlabel(obs_name)
+        ax_ratio.set_ylabel("Ratio")
+        ax_ratio.set_ylim(0.6, 1.4)
+        ax_ratio.grid(True, linestyle='--', alpha=0.5)
+    
+    fig.suptitle("Comparison of TUnfold and OmniFold", fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
