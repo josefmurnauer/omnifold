@@ -1,9 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras import layers, Model
 
-# -------------------------------
-# Custom Layers
-# -------------------------------
 
 class ParticleMask(layers.Layer):
     """Mask particles where all features are zero."""
@@ -46,41 +43,34 @@ class KNNLayer(layers.Layer):
         self.dense2 = layers.Dense(projection_dim, activation='gelu')
 
     def call(self, points, features):
-        # points: (batch, P, 2), features: (batch, P, C)
-        # Compute pairwise distance
         r = tf.reduce_sum(points * points, axis=-1, keepdims=True)
         m = tf.matmul(points, points, transpose_b=True)
         D = tf.abs(r - 2 * m + tf.transpose(r, perm=(0, 2, 1)))
 
-        # KNN indices
-        indices = tf.nn.top_k(-D, k=self.K + 1).indices[:, :, 1:]  # (batch, P, K)
+        indices = tf.nn.top_k(-D, k=self.K + 1).indices[:, :, 1:]
 
-        # Gather KNN features
         batch_size = tf.shape(features)[0]
         num_points = tf.shape(features)[1]
         batch_indices = tf.reshape(tf.range(batch_size), (-1, 1, 1))
         batch_indices = tf.tile(batch_indices, (1, num_points, self.K))
         knn_indices = tf.stack([batch_indices, indices], axis=-1)
-        knn_features = tf.gather_nd(features, knn_indices)  # (batch, P, K, C)
+        knn_features = tf.gather_nd(features, knn_indices)
 
-        # Center features broadcast
         center_features = tf.expand_dims(features, 2)
         center_features = tf.broadcast_to(center_features, tf.shape(knn_features))
 
-        # Concatenate differences
         local = tf.concat([knn_features - center_features, center_features], axis=-1)
         local = self.dense1(local)
         local = self.dense2(local)
-        local = tf.reduce_mean(local, axis=2)  # average over K neighbors
+        local = tf.reduce_mean(local, axis=2)
         return local
 
 # -------------------------------
 # PET Model
 # -------------------------------
-
 class PET(Model):
     def __init__(self, num_feat, num_part=12, projection_dim=32, num_heads=2,
-                 num_transformer=2, local=True, K=3, layer_scale=True, **kwargs):
+                    num_transformer=2, local=True, K=3, layer_scale=True, **kwargs):
         super().__init__(**kwargs)
         self.num_feat = num_feat
         self.num_part = num_part
@@ -91,18 +81,15 @@ class PET(Model):
         self.K = K
         self.layer_scale = layer_scale
 
-        # Input encoding
         self.input_dense1 = layers.Dense(2 * projection_dim, activation='gelu')
         self.input_dense2 = layers.Dense(projection_dim, activation='gelu')
 
-        # Local KNN layer
         if self.local:
             self.knn_layer = KNNLayer(K=K, projection_dim=projection_dim)
 
-        # Transformer blocks
         self.norm_layers = [layers.LayerNormalization(epsilon=1e-6) for _ in range(num_transformer * 2)]
         self.mha_layers = [layers.MultiHeadAttention(num_heads=num_heads, key_dim=projection_dim // num_heads)
-                           for _ in range(num_transformer)]
+                            for _ in range(num_transformer)]
         self.ffn_dense1 = [layers.Dense(2 * projection_dim, activation='gelu') for _ in range(num_transformer)]
         self.ffn_dense2 = [layers.Dense(projection_dim) for _ in range(num_transformer)]
         if self.layer_scale:
@@ -110,7 +97,6 @@ class PET(Model):
         else:
             self.layer_scales = [None] * (num_transformer * 2)
 
-        # Class token
         self.class_token = self.add_weight(
             shape=(1, projection_dim),
             initializer='zeros',
@@ -118,31 +104,25 @@ class PET(Model):
             name='class_token'
         )
 
-        # Output head
         self.out_dense1 = layers.Dense(64, activation='relu')
         self.out_dense2 = layers.Dense(1, activation=None)
 
-        # Masking
         self.particle_mask = ParticleMask()
         self.pool = MaskedAveragePooling()
 
     def call(self, x, training=False):
-        mask = self.particle_mask(x)  # (batch, P)
+        mask = self.particle_mask(x)
 
-        # Input encoding
         encoded = self.input_dense1(x)
         encoded = self.input_dense2(encoded)
 
-        # Local KNN
         if self.local:
-            points = x[:, :, 1:3]  # assuming first 2 features are coordinates
+            points = x[:, :, 1:3]
             local_features = self.knn_layer(points, encoded)
             encoded += local_features
 
-        # Apply mask
         encoded *= tf.cast(mask[..., None], tf.float32)
 
-        # Transformer blocks
         for i in range(self.num_transformer):
             x1 = self.norm_layers[2 * i](encoded)
             attn = self.mha_layers[i](x1, x1)
@@ -158,15 +138,12 @@ class PET(Model):
             encoded = x3 + x2
             encoded *= tf.cast(mask[..., None], tf.float32)
 
-        # Add class token
         batch_size = tf.shape(encoded)[0]
         class_tokens = tf.tile(self.class_token[None, :, :], [batch_size, 1, 1])
         encoded = tf.concat([class_tokens, encoded], axis=1)
 
-        # Pooling over sequence (exclude class token?)
-        pooled = self.pool(encoded[:, 1:], mask)  # average pooling over particles
+        pooled = self.pool(encoded[:, 1:], mask)
 
-        # Output
         x = self.out_dense1(pooled)
         out = self.out_dense2(x)
         return out
@@ -188,3 +165,4 @@ class PET(Model):
     @classmethod
     def from_config(cls, config):
         return cls(**config)
+
