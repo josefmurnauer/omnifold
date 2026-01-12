@@ -236,7 +236,7 @@ class MultiFold():
             else:
                 callbacks = []
 
-            callbacks = callbacks + [ReduceLROnPlateau(patience=3, min_lr=1e-7,
+            callbacks = callbacks + [ReduceLROnPlateau(patience=4, min_lr=1e-7,
                                                        verbose=self.verbose,
                                                        monitor="val_loss"),
                                      EarlyStopping(patience=self.patience,
