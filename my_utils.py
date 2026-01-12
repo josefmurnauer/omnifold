@@ -156,39 +156,7 @@ def W_candidate(array):
 
     return selected_4vec
 
-def min_mbl(array):
-    # b-jet indices: 1, 2
-    b_jets = [array[:, i, :] for i in range(1,3)]
-    lepton = array[:, 0, :]
 
-    b_jet_4vecs = [convert_to4vector(b_jet) for b_jet in b_jets]
-    lepton_4vec = convert_to4vector(lepton)
-
-    mbl_values = []
-    for b_jet_4vec in b_jet_4vecs:
-        combined_4vec = b_jet_4vec + lepton_4vec
-        mbl = calculate_mass(combined_4vec)
-        mbl_values.append(mbl)
-
-    mbl_stack = np.stack(mbl_values, axis=1)  # shape (n_events, 2)
-    return np.min(mbl_stack, axis=1)  # shape (n_events,)
-
-def max_mbl(array):
-    # b-jet indices: 1, 2
-    b_jets = [array[:, i, :] for i in range(1,3)]
-    lepton = array[:, 0, :]
-
-    b_jet_4vecs = [convert_to4vector(b_jet) for b_jet in b_jets]
-    lepton_4vec = convert_to4vector(lepton)
-
-    mbl_values = []
-    for b_jet_4vec in b_jet_4vecs:
-        combined_4vec = b_jet_4vec + lepton_4vec
-        mbl = calculate_mass(combined_4vec)
-        mbl_values.append(mbl)
-
-    mbl_stack = np.stack(mbl_values, axis=1)  # shape (n_events, 2)
-    return np.max(mbl_stack, axis=1)  # shape (n_events,)
 
 def min_mbW(array):
     # b-jet indices: 1, 2
@@ -299,6 +267,40 @@ def max_dr_bl(array):
     dr_stack = np.stack(dr_values, axis=1)  # shape (n_events, 2)
     return np.max(dr_stack, axis=1)
 
+def min_mbl(array):
+    # b-jet indices: 1, 2
+    b_jets = [array[:, i, :] for i in range(1,3)]
+    lepton = array[:, 0, :]
+
+    b_jet_4vecs = [convert_to4vector(b_jet) for b_jet in b_jets] # what if there are no b-jets?
+    lepton_4vec = convert_to4vector(lepton)
+
+    mbl_values = []
+    for b_jet_4vec in b_jet_4vecs:
+        combined_4vec = b_jet_4vec + lepton_4vec
+        mbl = calculate_mass(combined_4vec)
+        mbl_values.append(mbl)
+
+    mbl_stack = np.stack(mbl_values, axis=1)  # shape (n_events, 2)
+    return np.min(mbl_stack, axis=1)  # shape (n_events,)
+
+def max_mbl(array):
+    # b-jet indices: 1, 2
+    b_jets = [array[:, i, :] for i in range(1,3)]
+    lepton = array[:, 0, :]
+
+    b_jet_4vecs = [convert_to4vector(b_jet) for b_jet in b_jets]
+    lepton_4vec = convert_to4vector(lepton)
+
+    mbl_values = []
+    for b_jet_4vec in b_jet_4vecs:
+        combined_4vec = b_jet_4vec + lepton_4vec
+        mbl = calculate_mass(combined_4vec)
+        mbl_values.append(mbl)
+
+    mbl_stack = np.stack(mbl_values, axis=1)  # shape (n_events, 2)
+    return np.max(mbl_stack, axis=1)  # shape (n_events,)
+
 def four_vector_transformation(array1, array2):
     vec1 = convert_to4vector(array1)
     vec2 = convert_to4vector(array2)
@@ -317,10 +319,77 @@ def four_vector_transformation(array1, array2):
 
     return np.stack([pt, eta, phi, m], axis=-1)
 
+def min_mbl_4vec(array):
+    """
+    Returns the (pt, eta, phi, mass) of the (b, l) system
+    with the minimal invariant mass for each event.
+    
+    Output shape: (n_events, 4)
+    """
+
+    # lepton is index 0, b-jets are indices 1 and 2
+    lepton = array[:, 0, :]
+    b_jets = [array[:, i, :] for i in range(1, 3)]
+
+    # build (pt, eta, phi, m) for each (b, l) combination
+    bl_4vecs = [
+        four_vector_transformation(b_jet, lepton)
+        for b_jet in b_jets
+    ]  # list of shape [(n_events, 4), (n_events, 4)]
+
+    # stack -> shape (n_events, 2, 4)
+    bl_stack = np.stack(bl_4vecs, axis=1)
+
+    # extract masses -> shape (n_events, 2)
+    masses = bl_stack[:, :, 3]
+
+    # find index of minimal mass per event
+    min_idx = np.argmin(masses, axis=1)
+
+    # select corresponding 4-vector
+    n_events = bl_stack.shape[0]
+    result = bl_stack[np.arange(n_events), min_idx]
+
+    return result
+
+def max_mbl_4vec(array):
+    """
+    Returns the (pt, eta, phi, mass) of the (b, l) system
+    with the maximal invariant mass for each event.
+    
+    Output shape: (n_events, 4)
+    """
+
+    # lepton is index 0, b-jets are indices 1 and 2
+    lepton = array[:, 0, :]
+    b_jets = [array[:, i, :] for i in range(1, 3)]
+
+    # build (pt, eta, phi, m) for each (b, l) combination
+    bl_4vecs = [
+        four_vector_transformation(b_jet, lepton)
+        for b_jet in b_jets
+    ]  # list of shape [(n_events, 4), (n_events, 4)]
+
+    # stack -> shape (n_events, 2, 4)
+    bl_stack = np.stack(bl_4vecs, axis=1)
+
+    # extract masses -> shape (n_events, 2)
+    masses = bl_stack[:, :, 3]
+
+    # find index of minimal mass per event
+    max_idx = np.argmax(masses, axis=1)
+
+    # select corresponding 4-vector
+    n_events = bl_stack.shape[0]
+    result = bl_stack[np.arange(n_events), max_idx]
+
+    return result
+
+
 def pairwise(array):
-    new_entry1 = four_vector_transformation(array[:,0,:], array[:,1,:])
+    new_entry1 = min_mbl_4vec(array)
     new_entry1_extended = new_entry1[:,np.newaxis,:]
-    new_entry2 = four_vector_transformation(array[:,0,:], array[:,2,:])
+    new_entry2 = max_mbl_4vec(array)
     new_entry2_extended = new_entry2[:,np.newaxis,:]
     return np.concatenate([new_entry1_extended, new_entry2_extended], axis=1)
 
@@ -370,8 +439,9 @@ class JetScaler:
         return self.transform(X)
     
 particles = ['l1', 'b1', 'b2', 'b3', 'b4', 
-             'j1', 'j2', 'j3', 'j4', 'j5', 'j6', 'met'
-             ,'mbl1', 'mbl2'
+             'j1', 'j2', 'j3', 'j4', 'j5', 'j6', 'met',
+             'ptbl1', 'ptbl2',
+             'min_mbl', 'max_mbl'
              ]
 
 pt_binning = {
@@ -389,8 +459,8 @@ pt_binning = {
     'met': np.linspace(0, 300, 31),
     'ptbl1': np.linspace(0, 600, 21),
     'ptbl2': np.linspace(0, 600, 21),
-    'mbl1': np.linspace(0, 600, 21),
-    'mbl2': np.linspace(0, 600, 21),
+    'min_mbl': np.linspace(0, 600, 21),
+    'max_mbl': np.linspace(0, 600, 21),
 }
     
 def plot_pt_subplot(ax_main, ax_ratio, data_dict, weights_dict, bins):
@@ -649,3 +719,20 @@ def plot_omnifold_vs_tunfold(
     fig.suptitle("Comparison of TUnfold and OmniFold", fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     return fig
+
+
+def make_log_bins(xmin, xmax, n_per_decade=5):
+    """
+    Create logarithmic base-10 bins.
+    
+    xmin, xmax : range of values (must be > 0)
+    n_per_decade : number of bins in each decade; 
+                   more = finer binning at low pT
+    """
+    log_min = np.log10(xmin)
+    log_max = np.log10(xmax)
+
+    n_decades = log_max - log_min
+    n_bins = int(n_decades * n_per_decade)
+
+    return np.logspace(log_min, log_max, n_bins + 1)
