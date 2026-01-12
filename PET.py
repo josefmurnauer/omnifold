@@ -35,10 +35,11 @@ class LayerScale(layers.Layer):
 
 class KNNLayer(layers.Layer):
     """Compute local KNN features."""
-    def __init__(self, K, projection_dim, **kwargs):
+    def __init__(self, K, projection_dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.K = K
         self.projection_dim = projection_dim
+        self.dropout = layers.Dropout(dropout_rate)
         self.dense1 = layers.Dense(2 * projection_dim, activation='gelu')
         self.dense2 = layers.Dense(projection_dim, activation='gelu')
 
@@ -61,6 +62,7 @@ class KNNLayer(layers.Layer):
 
         local = tf.concat([knn_features - center_features, center_features], axis=-1)
         local = self.dense1(local)
+        local = self.dropout(local)
         local = self.dense2(local)
         local = tf.reduce_mean(local, axis=2)
         return local
@@ -70,7 +72,7 @@ class KNNLayer(layers.Layer):
 # -------------------------------
 class PET(Model):
     def __init__(self, num_feat, num_part=12, projection_dim=32, num_heads=2,
-                    num_transformer=2, local=True, K=3, layer_scale=True, **kwargs):
+                    num_transformer=2, local=True, K=3, layer_scale=True, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.num_feat = num_feat
         self.num_part = num_part
@@ -80,12 +82,15 @@ class PET(Model):
         self.local = local
         self.K = K
         self.layer_scale = layer_scale
+        self.dropout_rate = dropout_rate
 
         self.input_dense1 = layers.Dense(2 * projection_dim, activation='gelu')
         self.input_dense2 = layers.Dense(projection_dim, activation='gelu')
+        self.dropout_ffn = layers.Dropout(dropout_rate)
+        self.dropout_output = layers.Dropout(dropout_rate)
 
         if self.local:
-            self.knn_layer = KNNLayer(K=K, projection_dim=projection_dim)
+            self.knn_layer = KNNLayer(K=K, projection_dim=projection_dim, dropout_rate=dropout_rate)
 
         self.norm_layers = [layers.LayerNormalization(epsilon=1e-6) for _ in range(num_transformer * 2)]
         self.mha_layers = [layers.MultiHeadAttention(num_heads=num_heads, key_dim=projection_dim // num_heads)
@@ -132,6 +137,7 @@ class PET(Model):
 
             x3 = self.norm_layers[2 * i + 1](x2)
             x3 = self.ffn_dense1[i](x3)
+            x3 = self.dropout_ffn(x3, training=training)
             x3 = self.ffn_dense2[i](x3)
             if self.layer_scale:
                 x3 = self.layer_scales[2 * i + 1](x3, mask)
@@ -145,6 +151,7 @@ class PET(Model):
         pooled = self.pool(encoded[:, 1:], mask)
 
         x = self.out_dense1(pooled)
+        #x = self.dropout_output(x, training=training)
         out = self.out_dense2(x)
         return out
 
@@ -159,6 +166,7 @@ class PET(Model):
             "local": self.local,
             "K": self.K,
             "layer_scale": self.layer_scale,
+            "dropout_rate": self.dropout_rate,
         })
         return config
 
